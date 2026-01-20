@@ -633,12 +633,22 @@ You have access to various tools for file operations, bash commands, and system 
     }
   }
 
-  private safeJsonParse(jsonString: string): any {
-    // Handle null, undefined, or empty strings
-    if (!jsonString || typeof jsonString !== 'string') {
+  private safeJsonParse(jsonString: string | object): any {
+    // Handle null or undefined
+    if (jsonString === null || jsonString === undefined) {
       return {};
     }
-    
+
+    // If already an object (Ollama sends arguments as object, not string)
+    if (typeof jsonString === 'object') {
+      return jsonString;
+    }
+
+    // Handle empty strings
+    if (typeof jsonString !== 'string' || jsonString.trim() === '') {
+      return {};
+    }
+
     try {
       // First, try normal JSON parsing
       return JSON.parse(jsonString);
@@ -781,9 +791,41 @@ You have access to various tools for file operations, bash commands, and system 
           return await this.textEditor.view(args.path, range);
 
         case "create_file":
+          // Validate that path and content are provided
+          if (!args || !args.path || typeof args.path !== 'string' || args.path.trim() === '') {
+            return {
+              success: false,
+              error: `Invalid path parameter: ${JSON.stringify(args?.path)}. Path must be a non-empty string.`,
+            };
+          }
+          if (!args.content || typeof args.content !== 'string') {
+            return {
+              success: false,
+              error: `Invalid content parameter: content must be a string.`,
+            };
+          }
           return await this.textEditor.create(args.path, args.content);
 
         case "str_replace_editor":
+          // Validate that path, old_str, and new_str are provided
+          if (!args || !args.path || typeof args.path !== 'string' || args.path.trim() === '') {
+            return {
+              success: false,
+              error: `Invalid path parameter: ${JSON.stringify(args?.path)}. Path must be a non-empty string.`,
+            };
+          }
+          if (args.old_str === undefined || args.old_str === null || typeof args.old_str !== 'string') {
+            return {
+              success: false,
+              error: `Invalid old_str parameter: old_str must be a string.`,
+            };
+          }
+          if (args.new_str === undefined || args.new_str === null || typeof args.new_str !== 'string') {
+            return {
+              success: false,
+              error: `Invalid new_str parameter: new_str must be a string.`,
+            };
+          }
           return await this.textEditor.strReplace(
             args.path,
             args.old_str,
@@ -792,6 +834,13 @@ You have access to various tools for file operations, bash commands, and system 
           );
 
         case "bash":
+          // Validate that command is provided
+          if (!args || !args.command || typeof args.command !== 'string' || args.command.trim() === '') {
+            return {
+              success: false,
+              error: `Invalid command parameter: ${JSON.stringify(args?.command)}. Command must be a non-empty string.`,
+            };
+          }
           return await this.bash.execute(args.command);
 
         case "create_todo_list":
