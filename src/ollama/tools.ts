@@ -103,13 +103,13 @@ export const OLLAMA_TOOLS: OllamaTool[] = [
     function: {
       name: "search",
       description:
-        "Unified search tool for finding text content or files (similar to Cursor's search)",
+        "Search for text content in files or find files by name/pattern. REQUIRED: You MUST provide a non-empty 'query' parameter. Examples: query='TODO' to find TODOs, query='*.ts' to find TypeScript files, query='import' to find import statements, query='README' to find README files.",
       parameters: {
         type: "object",
         properties: {
           query: {
             type: "string",
-            description: "Text to search for or file name/path pattern",
+            description: "REQUIRED: The text to search for or file name/path pattern. Must be a non-empty string. Examples: 'function', '*.ts', 'README', 'import'",
           },
           search_type: {
             type: "string",

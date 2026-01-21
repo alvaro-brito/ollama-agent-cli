@@ -850,24 +850,23 @@ You have access to various tools for file operations, bash commands, and system 
           return await this.todoTool.updateTodoList(args.updates);
 
         case "search":
-          // Validate that query is provided
-          if (!args || !args.query || typeof args.query !== 'string' || args.query.trim() === '') {
-            return {
-              success: false,
-              error: `Invalid query parameter: ${JSON.stringify(args?.query)}. Query must be a non-empty string.`,
-            };
+          // Handle empty query - use "*" as fallback to list files
+          let searchQuery = args?.query;
+          if (!searchQuery || typeof searchQuery !== 'string' || searchQuery.trim() === '') {
+            // If query is empty, default to listing all files with "*"
+            searchQuery = "*";
           }
-          
-          return await this.search.search(args.query, {
-            searchType: args.search_type,
-            includePattern: args.include_pattern,
-            excludePattern: args.exclude_pattern,
-            caseSensitive: args.case_sensitive,
-            wholeWord: args.whole_word,
-            regex: args.regex,
-            maxResults: args.max_results,
-            fileTypes: args.file_types,
-            includeHidden: args.include_hidden,
+
+          return await this.search.search(searchQuery, {
+            searchType: args?.search_type || "files",
+            includePattern: args?.include_pattern,
+            excludePattern: args?.exclude_pattern,
+            caseSensitive: args?.case_sensitive,
+            wholeWord: args?.whole_word,
+            regex: args?.regex,
+            maxResults: args?.max_results,
+            fileTypes: args?.file_types,
+            includeHidden: args?.include_hidden,
           });
 
         default:

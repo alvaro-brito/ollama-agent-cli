@@ -1,4 +1,4 @@
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { ToolResult } from "../types";
 import { ConfirmationService } from "../utils/confirmation-service";
 import * as fs from "fs-extra";
@@ -31,6 +31,7 @@ export interface UnifiedSearchResult {
 export class SearchTool {
   private confirmationService = ConfirmationService.getInstance();
   private currentDirectory: string = process.cwd();
+  private ripgrepAvailable: boolean | null = null;
 
   /**
    * Unified search method that can search for text content or find files
@@ -51,12 +52,18 @@ export class SearchTool {
     } = {}
   ): Promise<ToolResult> {
     try {
-      const searchType = options.searchType || "both";
+      // Handle empty query - use "*" as fallback to list files
+      let searchQuery = query;
+      if (!searchQuery || typeof searchQuery !== "string" || searchQuery.trim() === "") {
+        searchQuery = "*";
+      }
+
+      const searchType = options.searchType || "files";
       const results: UnifiedSearchResult[] = [];
 
       // Search for text content if requested
       if (searchType === "text" || searchType === "both") {
-        const textResults = await this.executeRipgrep(query, options);
+        const textResults = await this.executeTextSearch(searchQuery, options);
         results.push(
           ...textResults.map((r) => ({
             type: "text" as const,
@@ -71,7 +78,7 @@ export class SearchTool {
 
       // Search for files if requested
       if (searchType === "files" || searchType === "both") {
-        const fileResults = await this.findFilesByPattern(query, options);
+        const fileResults = await this.findFilesByPattern(searchQuery, options);
         results.push(
           ...fileResults.map((r) => ({
             type: "file" as const,
@@ -84,13 +91,13 @@ export class SearchTool {
       if (results.length === 0) {
         return {
           success: true,
-          output: `No results found for "${query}"`,
+          output: `No results found for "${searchQuery}"`,
         };
       }
 
       const formattedOutput = this.formatUnifiedResults(
         results,
-        query,
+        searchQuery,
         searchType
       );
 
@@ -104,6 +111,204 @@ export class SearchTool {
         error: `Search error: ${error.message}`,
       };
     }
+  }
+
+  /**
+   * Check if ripgrep is available in the system
+   */
+  private isRipgrepAvailable(): boolean {
+    if (this.ripgrepAvailable !== null) {
+      return this.ripgrepAvailable;
+    }
+
+    try {
+      const result = spawnSync("rg", ["--version"], { timeout: 5000 });
+      this.ripgrepAvailable = result.status === 0;
+    } catch {
+      this.ripgrepAvailable = false;
+    }
+
+    return this.ripgrepAvailable;
+  }
+
+  /**
+   * Execute text search - uses ripgrep if available, otherwise falls back to Node.js implementation
+   */
+  private async executeTextSearch(
+    query: string,
+    options: {
+      includePattern?: string;
+      excludePattern?: string;
+      caseSensitive?: boolean;
+      wholeWord?: boolean;
+      regex?: boolean;
+      maxResults?: number;
+      fileTypes?: string[];
+      excludeFiles?: string[];
+    }
+  ): Promise<SearchResult[]> {
+    if (this.isRipgrepAvailable()) {
+      return this.executeRipgrep(query, options);
+    } else {
+      return this.executeNodeSearch(query, options);
+    }
+  }
+
+  /**
+   * Fallback search implementation using pure Node.js (no external dependencies)
+   */
+  private async executeNodeSearch(
+    query: string,
+    options: {
+      includePattern?: string;
+      excludePattern?: string;
+      caseSensitive?: boolean;
+      wholeWord?: boolean;
+      regex?: boolean;
+      maxResults?: number;
+      fileTypes?: string[];
+      excludeFiles?: string[];
+    }
+  ): Promise<SearchResult[]> {
+    const results: SearchResult[] = [];
+    const maxResults = options.maxResults || 100;
+    const caseSensitive = options.caseSensitive ?? false;
+
+    // Build regex pattern
+    let pattern: RegExp;
+    try {
+      let regexStr = options.regex ? query : this.escapeRegex(query);
+      if (options.wholeWord) {
+        regexStr = `\\b${regexStr}\\b`;
+      }
+      pattern = new RegExp(regexStr, caseSensitive ? "g" : "gi");
+    } catch {
+      // If regex is invalid, fall back to literal search
+      pattern = new RegExp(this.escapeRegex(query), caseSensitive ? "g" : "gi");
+    }
+
+    // Common binary file extensions to skip
+    const binaryExtensions = new Set([
+      ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".svg",
+      ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+      ".zip", ".tar", ".gz", ".rar", ".7z",
+      ".exe", ".dll", ".so", ".dylib",
+      ".mp3", ".mp4", ".avi", ".mov", ".wav", ".flac",
+      ".ttf", ".woff", ".woff2", ".eot", ".otf",
+      ".pyc", ".class", ".o", ".obj",
+      ".lock", ".lockb"
+    ]);
+
+    // Directories to skip
+    const skipDirs = new Set([
+      "node_modules", ".git", ".svn", ".hg", "dist", "build",
+      ".next", ".cache", "__pycache__", ".venv", "venv",
+      "coverage", ".nyc_output", ".turbo"
+    ]);
+
+    const walkAndSearch = async (dir: string, depth: number = 0): Promise<void> => {
+      if (depth > 15 || results.length >= maxResults) return;
+
+      try {
+        const entries = await fs.readdir(dir, { withFileTypes: true });
+
+        for (const entry of entries) {
+          if (results.length >= maxResults) break;
+
+          const fullPath = path.join(dir, entry.name);
+          const relativePath = path.relative(this.currentDirectory, fullPath);
+
+          // Skip hidden files/directories
+          if (entry.name.startsWith(".") && entry.name !== ".env.example") {
+            continue;
+          }
+
+          // Skip common directories
+          if (entry.isDirectory() && skipDirs.has(entry.name)) {
+            continue;
+          }
+
+          // Apply exclude pattern
+          if (options.excludePattern && relativePath.includes(options.excludePattern)) {
+            continue;
+          }
+
+          // Apply exclude files
+          if (options.excludeFiles?.some(f => relativePath.includes(f))) {
+            continue;
+          }
+
+          if (entry.isDirectory()) {
+            await walkAndSearch(fullPath, depth + 1);
+          } else if (entry.isFile()) {
+            const ext = path.extname(entry.name).toLowerCase();
+
+            // Skip binary files
+            if (binaryExtensions.has(ext)) {
+              continue;
+            }
+
+            // Apply include pattern
+            if (options.includePattern) {
+              const globPattern = options.includePattern.replace(/\*/g, ".*");
+              if (!new RegExp(globPattern).test(entry.name)) {
+                continue;
+              }
+            }
+
+            // Apply file type filter
+            if (options.fileTypes && options.fileTypes.length > 0) {
+              const fileExt = ext.slice(1); // Remove the dot
+              if (!options.fileTypes.includes(fileExt)) {
+                continue;
+              }
+            }
+
+            // Search in file
+            try {
+              const stats = await fs.stat(fullPath);
+              // Skip files larger than 1MB
+              if (stats.size > 1024 * 1024) {
+                continue;
+              }
+
+              const content = await fs.readFile(fullPath, "utf-8");
+              const lines = content.split("\n");
+
+              for (let i = 0; i < lines.length && results.length < maxResults; i++) {
+                const line = lines[i];
+                pattern.lastIndex = 0; // Reset regex state
+
+                const match = pattern.exec(line);
+                if (match) {
+                  results.push({
+                    file: relativePath,
+                    line: i + 1,
+                    column: match.index + 1,
+                    text: line.trim().substring(0, 200),
+                    match: match[0],
+                  });
+                }
+              }
+            } catch {
+              // Skip files that can't be read (binary, permission issues, etc.)
+            }
+          }
+        }
+      } catch {
+        // Skip directories we can't read
+      }
+    };
+
+    await walkAndSearch(this.currentDirectory);
+    return results;
+  }
+
+  /**
+   * Escape special regex characters
+   */
+  private escapeRegex(str: string): string {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
   /**
